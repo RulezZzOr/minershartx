@@ -22,11 +22,34 @@ It is focused on **Windows + NVIDIA CUDA** first.
 - CMake 3.24+
 - Visual Studio 2022 Build Tools (MSVC) or Ninja + MSVC
 
+## Automatic Tool Install (Windows)
+
+Run this once in **PowerShell (Administrator)**:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass -Force
+.\scripts\setup_windows_tools.ps1
+```
+
+This installs:
+
+- CMake
+- Ninja
+- Git
+- Visual Studio 2022 Build Tools (C++ workload + Windows SDK)
+- CUDA Toolkit (best effort via `winget`, fallback message if manual install is needed)
+
 ## Build (PowerShell)
 
 ```powershell
 cmake -S . -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES=native
 cmake --build build --config Release
+```
+
+Or use the helper script:
+
+```powershell
+.\scripts\build_windows.ps1 -BuildType Release -CudaArch native
 ```
 
 If `native` does not work in your toolchain, set explicit architecture, for example:

@@ -4,3 +4,4 @@ build/
 *.sln
 *.vcxproj*
 CMakeUserPresets.json
+.DS_Store
