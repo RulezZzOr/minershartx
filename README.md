@@ -235,6 +235,7 @@ RPC authentication:
 - If your Bitcoin Core node uses the default cookie auth, the miner auto-detects `.cookie`
 - You can also pass `--rpc-user` and `--rpc-pass`
 - Use `--rpc-cookie <path>` if your cookie file is in a custom datadir
+- `--rpc-url` must point at the Bitcoin RPC port, usually `8332`; `8333` is the P2P port unless you explicitly changed `rpcport`
 - `--rpc-url` may include a path, for example `http://127.0.0.1:8332/wallet/<walletname>`
 - If you provide `--address`, standard Bitcoin addresses are decoded locally and do not require wallet RPC access for payout-script resolution
 - If you omit `--address`, the miner still needs wallet RPC access to call `getnewaddress`

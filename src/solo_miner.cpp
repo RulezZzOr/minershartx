@@ -825,9 +825,15 @@ class RpcClient {
       return false;
     }
 
+    if (raw_response.rfind("HTTP/", 0) != 0) {
+      error = "RPC endpoint did not return HTTP data; are you pointing at the Bitcoin "
+              "P2P port 8333 instead of the RPC port 8332?";
+      return false;
+    }
+
     const std::size_t header_end = raw_response.find("\r\n\r\n");
     if (header_end == std::string::npos) {
-      error = "invalid HTTP response";
+      error = "RPC endpoint returned an invalid HTTP response";
       return false;
     }
 
@@ -841,7 +847,7 @@ class RpcClient {
     return true;
   }
 
- private:
+private:
   std::string host_;
   std::string port_;
   std::string path_ = "/";
@@ -853,7 +859,28 @@ bool rpc_call_checked(const RpcClient& client,
                       const json& params,
                       json& result,
                       std::string& error_text,
-                      const std::atomic<bool>* cancel_flag = nullptr) {
+                      const std::atomic<bool>* cancel_flag = nullptr);
+
+bool verify_rpc_connection(const RpcClient& client, std::string& error) {
+  json result;
+  if (!rpc_call_checked(client, "getblockchaininfo", json::array(), result, error)) {
+    return false;
+  }
+
+  if (!result.is_object()) {
+    error = "getblockchaininfo returned a non-object result";
+    return false;
+  }
+
+  return true;
+}
+
+bool rpc_call_checked(const RpcClient& client,
+                      const std::string& method,
+                      const json& params,
+                      json& result,
+                      std::string& error_text,
+                      const std::atomic<bool>* cancel_flag) {
   json response;
   if (!client.call(method, params, response, error_text, cancel_flag)) {
     return false;
@@ -882,6 +909,7 @@ bool resolve_payout_script(const RpcClient& client,
   if (address.empty()) {
     json result;
     if (!rpc_call_checked(client, "getnewaddress", json::array(), result, error)) {
+      error = "wallet RPC getnewaddress failed: " + error;
       return false;
     }
     if (!result.is_string()) {
@@ -1263,6 +1291,13 @@ int run_solo_miner(const SoloConfig& config) {
   }
 
   RpcClient rpc(rpc_endpoint.host, rpc_endpoint.port, auth_header, rpc_endpoint.path);
+
+  std::string rpc_probe_error;
+  if (!verify_rpc_connection(rpc, rpc_probe_error)) {
+    std::cerr << "Failed to connect to Bitcoin Core RPC at " << rpc_url << ": "
+              << rpc_probe_error << "\n";
+    return 1;
+  }
 
   std::vector<std::uint8_t> payout_script;
   std::string payout_address;
