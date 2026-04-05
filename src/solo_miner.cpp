@@ -89,6 +89,12 @@ struct GpuTelemetry {
   int fan_percent = -1;
 };
 
+struct HttpEndpoint {
+  std::string host;
+  std::string port;
+  std::string path = "/";
+};
+
 class SocketSystem {
  public:
   SocketSystem() {
@@ -218,6 +224,53 @@ class TcpSocket {
     return true;
   }
 
+  bool recv_all(std::string& out, const std::atomic<bool>* cancel_flag) {
+    if (sock_ == kInvalidSocket) {
+      return false;
+    }
+
+    out.clear();
+    char buffer[8192];
+    for (;;) {
+      if (cancel_flag != nullptr &&
+          cancel_flag->load(std::memory_order_relaxed)) {
+        return false;
+      }
+
+      fd_set readfds;
+      FD_ZERO(&readfds);
+      FD_SET(sock_, &readfds);
+
+      timeval timeout{};
+      timeout.tv_sec = 1;
+      timeout.tv_usec = 0;
+
+#ifdef _WIN32
+      const int ready = select(0, &readfds, nullptr, nullptr, &timeout);
+#else
+      const int ready = select(static_cast<int>(sock_) + 1, &readfds, nullptr,
+                               nullptr, &timeout);
+#endif
+      if (ready < 0) {
+        return false;
+      }
+      if (ready == 0) {
+        continue;
+      }
+
+      const int n = ::recv(sock_, buffer, static_cast<int>(sizeof(buffer)), 0);
+      if (n < 0) {
+        return false;
+      }
+      if (n == 0) {
+        break;
+      }
+      out.append(buffer, static_cast<std::size_t>(n));
+    }
+
+    return true;
+  }
+
  private:
   SocketHandle sock_ = kInvalidSocket;
 };
@@ -231,6 +284,7 @@ struct TemplateTx {
 struct SoloTemplate {
   std::string identity;
   std::string longpollid;
+  std::string longpolluri;
   std::string tip_hash;
   std::uint32_t version = 0;
   std::array<std::uint8_t, 32> prevhash_le{};
@@ -546,6 +600,68 @@ std::string right_trim_to_width(const std::string& value, const std::size_t widt
   return value.substr(value.size() - width);
 }
 
+bool parse_http_endpoint(const std::string& input,
+                         const HttpEndpoint* base,
+                         HttpEndpoint& out,
+                         std::string& error) {
+  std::string endpoint = trim_ascii(input);
+  if (endpoint.empty()) {
+    error = "empty HTTP endpoint";
+    return false;
+  }
+
+  if (endpoint.rfind("http://", 0) == 0) {
+    endpoint.erase(0, std::strlen("http://"));
+  } else if (endpoint.rfind("https://", 0) == 0) {
+    error = "https RPC endpoints are not supported";
+    return false;
+  }
+
+  if (endpoint.find("://") != std::string::npos) {
+    error = "unsupported URI scheme";
+    return false;
+  }
+
+  if (endpoint.front() == '/') {
+    if (base == nullptr || base->host.empty() || base->port.empty()) {
+      error = "relative URI requires a base endpoint";
+      return false;
+    }
+    out = *base;
+    out.path = endpoint;
+    return true;
+  }
+
+  std::string host_port = endpoint;
+  std::string path = "/";
+  const std::size_t slash_pos = endpoint.find('/');
+  if (slash_pos != std::string::npos) {
+    host_port = endpoint.substr(0, slash_pos);
+    path = endpoint.substr(slash_pos);
+  }
+
+  const std::size_t colon_pos = host_port.rfind(':');
+  if (colon_pos == std::string::npos || colon_pos == 0 ||
+      colon_pos + 1 >= host_port.size()) {
+    if (base != nullptr && endpoint.find(':') == std::string::npos) {
+      out = *base;
+      out.path = endpoint.front() == '/' ? endpoint : "/" + endpoint;
+      return true;
+    }
+    error = "expected host:port in HTTP endpoint";
+    return false;
+  }
+
+  out.host = host_port.substr(0, colon_pos);
+  out.port = host_port.substr(colon_pos + 1);
+  out.path = path.empty() ? "/" : path;
+  if (out.path.front() != '/') {
+    out.path.insert(out.path.begin(), '/');
+  }
+
+  return true;
+}
+
 
 bool read_gpu_telemetry(const int device, GpuTelemetry& out) {
   out = GpuTelemetry{};
@@ -618,49 +734,6 @@ std::string default_rpc_endpoint() {
   return "127.0.0.1:8332";
 }
 
-bool split_host_port(const std::string& endpoint,
-                     std::string& host,
-                     std::string& port) {
-  const std::size_t pos = endpoint.rfind(':');
-  if (pos == std::string::npos || pos == 0 || pos + 1 >= endpoint.size()) {
-    return false;
-  }
-
-  host = endpoint.substr(0, pos);
-  port = endpoint.substr(pos + 1);
-
-  while (!port.empty() &&
-         (port.back() == '\r' || port.back() == '\n' || port.back() == ' ' ||
-          port.back() == '\t')) {
-    port.pop_back();
-  }
-  while (!host.empty() &&
-         (host.back() == '\r' || host.back() == '\n' || host.back() == ' ' ||
-          host.back() == '\t')) {
-    host.pop_back();
-  }
-
-  return true;
-}
-
-bool normalize_rpc_url(std::string& endpoint) {
-  endpoint = trim_ascii(endpoint);
-  const std::string prefix_http = "http://";
-  const std::string prefix_https = "https://";
-  if (endpoint.rfind(prefix_http, 0) == 0) {
-    endpoint.erase(0, prefix_http.size());
-  } else if (endpoint.rfind(prefix_https, 0) == 0) {
-    endpoint.erase(0, prefix_https.size());
-  }
-
-  const std::size_t path_pos = endpoint.find('/');
-  if (path_pos != std::string::npos) {
-    endpoint = endpoint.substr(0, path_pos);
-  }
-
-  return !endpoint.empty() && endpoint.find(':') != std::string::npos;
-}
-
 bool resolve_auth_header(const SoloConfig& config,
                         std::string& auth_header,
                         std::string& auth_source,
@@ -698,13 +771,16 @@ bool resolve_auth_header(const SoloConfig& config,
 
 class RpcClient {
  public:
-  RpcClient(std::string host, std::string port, std::string auth_header)
-      : host_(std::move(host)), port_(std::move(port)), auth_header_(std::move(auth_header)) {}
+  RpcClient(std::string host, std::string port, std::string auth_header,
+            std::string path = "/")
+      : host_(std::move(host)), port_(std::move(port)), path_(std::move(path)),
+        auth_header_(std::move(auth_header)) {}
 
   bool call(const std::string& method,
             const json& params,
             json& response,
-            std::string& error) const {
+            std::string& error,
+            const std::atomic<bool>* cancel_flag = nullptr) const {
     json req;
     req["jsonrpc"] = "2.0";
     req["id"] = 1;
@@ -713,7 +789,8 @@ class RpcClient {
 
     std::ostringstream http;
     const std::string body = req.dump();
-    http << "POST / HTTP/1.1\r\n"
+    const std::string request_path = path_.empty() ? "/" : path_;
+    http << "POST " << request_path << " HTTP/1.1\r\n"
          << "Host: " << host_ << ":" << port_ << "\r\n"
          << "User-Agent: minershartx/0.3\r\n"
          << "Content-Type: application/json\r\n";
@@ -737,8 +814,13 @@ class RpcClient {
     }
 
     std::string raw_response;
-    if (!sock.recv_all(raw_response)) {
-      error = "failed to read RPC response";
+    if (!sock.recv_all(raw_response, cancel_flag)) {
+      if (cancel_flag != nullptr &&
+          cancel_flag->load(std::memory_order_relaxed)) {
+        error = "RPC request canceled";
+      } else {
+        error = "failed to read RPC response";
+      }
       return false;
     }
 
@@ -761,6 +843,7 @@ class RpcClient {
  private:
   std::string host_;
   std::string port_;
+  std::string path_ = "/";
   std::string auth_header_;
 };
 
@@ -768,9 +851,10 @@ bool rpc_call_checked(const RpcClient& client,
                       const std::string& method,
                       const json& params,
                       json& result,
-                      std::string& error_text) {
+                      std::string& error_text,
+                      const std::atomic<bool>* cancel_flag = nullptr) {
   json response;
-  if (!client.call(method, params, response, error_text)) {
+  if (!client.call(method, params, response, error_text, cancel_flag)) {
     return false;
   }
 
@@ -860,13 +944,19 @@ bool parse_template_tx(const json& tx_json, TemplateTx& out, std::string& error)
 bool fetch_block_template(const RpcClient& client,
                           const std::vector<std::uint8_t>& payout_script,
                           SoloTemplate& out,
-                          std::string& error) {
+                          std::string& error,
+                          const std::string* longpollid = nullptr,
+                          const std::atomic<bool>* cancel_flag = nullptr) {
   json request = json::object();
   request["capabilities"] = json::array({"coinbasevalue", "longpoll", "workid"});
   request["rules"] = json::array({"segwit"});
+  if (longpollid != nullptr && !longpollid->empty()) {
+    request["longpollid"] = *longpollid;
+  }
 
   json result;
-  if (!rpc_call_checked(client, "getblocktemplate", json::array({request}), result, error)) {
+  if (!rpc_call_checked(client, "getblocktemplate", json::array({request}), result, error,
+                        cancel_flag)) {
     return false;
   }
   if (!result.is_object()) {
@@ -915,6 +1005,9 @@ bool fetch_block_template(const RpcClient& client,
   tpl.longpollid = result.contains("longpollid") && result["longpollid"].is_string()
                        ? result["longpollid"].get<std::string>()
                        : std::string{};
+  tpl.longpolluri = result.contains("longpolluri") && result["longpolluri"].is_string()
+                        ? result["longpolluri"].get<std::string>()
+                        : std::string{};
   tpl.tip_hash = result["previousblockhash"].get<std::string>();
   tpl.identity = !tpl.longpollid.empty()
                      ? tpl.longpollid
@@ -1147,16 +1240,11 @@ int run_solo_miner(const SoloConfig& config) {
     return 1;
   }
 
-  std::string rpc_endpoint = config.rpc_url.empty() ? default_rpc_endpoint() : config.rpc_url;
-  if (!normalize_rpc_url(rpc_endpoint)) {
-    std::cerr << "Invalid --rpc-url format. Expected http://host:port\n";
-    return 1;
-  }
-
-  std::string rpc_host;
-  std::string rpc_port;
-  if (!split_host_port(rpc_endpoint, rpc_host, rpc_port)) {
-    std::cerr << "Invalid --rpc-url endpoint format. Expected host:port\n";
+  const std::string rpc_url = config.rpc_url.empty() ? default_rpc_endpoint() : config.rpc_url;
+  HttpEndpoint rpc_endpoint;
+  std::string rpc_endpoint_error;
+  if (!parse_http_endpoint(rpc_url, nullptr, rpc_endpoint, rpc_endpoint_error)) {
+    std::cerr << "Invalid --rpc-url format: " << rpc_endpoint_error << "\n";
     return 1;
   }
 
@@ -1168,7 +1256,7 @@ int run_solo_miner(const SoloConfig& config) {
     return 1;
   }
 
-  RpcClient rpc(rpc_host, rpc_port, auth_header);
+  RpcClient rpc(rpc_endpoint.host, rpc_endpoint.port, auth_header, rpc_endpoint.path);
 
   std::vector<std::uint8_t> payout_script;
   std::string payout_address;
@@ -1178,7 +1266,7 @@ int run_solo_miner(const SoloConfig& config) {
     return 1;
   }
 
-  std::cout << "Connected to Bitcoin Core RPC at " << rpc_endpoint << "\n";
+  std::cout << "Connected to Bitcoin Core RPC at " << rpc_url << "\n";
   std::cout << "Payout address: " << payout_address << "\n";
   std::cout << "Auth source: " << auth_source << "\n";
 
@@ -1186,6 +1274,16 @@ int run_solo_miner(const SoloConfig& config) {
   if (!fetch_block_template(rpc, payout_script, initial_template, rpc_error)) {
     std::cerr << "Failed to fetch block template: " << rpc_error << "\n";
     return 1;
+  }
+
+  if (!initial_template.longpollid.empty()) {
+    std::cout << "Solo longpoll: enabled";
+    if (!initial_template.longpolluri.empty()) {
+      std::cout << " uri=" << initial_template.longpolluri;
+    }
+    std::cout << "\n";
+  } else {
+    std::cout << "Solo longpoll: disabled, using periodic refresh\n";
   }
 
   std::mutex template_mutex;
@@ -1427,28 +1525,65 @@ int run_solo_miner(const SoloConfig& config) {
   }
 
   std::thread template_updater([&]() {
+    bool longpoll_supported = !shared_state.template_data.longpollid.empty();
     while (!stop_flag.load(std::memory_order_relaxed)) {
-      const int wait_seconds = std::max(1, config.template_poll_seconds);
-      if (!refresh_now.exchange(false, std::memory_order_relaxed)) {
-        bool should_refresh = false;
-        for (int i = 0; i < wait_seconds && !stop_flag.load(std::memory_order_relaxed); ++i) {
-          if (refresh_now.exchange(false, std::memory_order_relaxed)) {
-            should_refresh = true;
-            break;
-          }
-          std::this_thread::sleep_for(std::chrono::seconds(1));
-        }
-        if (!should_refresh && stop_flag.load(std::memory_order_relaxed)) {
-          break;
-        }
-      }
-
       SoloTemplate next_template;
       std::string update_error;
-      if (!fetch_block_template(rpc, payout_script, next_template, update_error)) {
-        std::lock_guard<std::mutex> lock(output_mutex);
-        std::cerr << "Template refresh failed: " << update_error << "\n";
-        continue;
+      bool fetched = false;
+
+      SoloTemplate current_template;
+      {
+        std::lock_guard<std::mutex> lock(template_mutex);
+        current_template = shared_state.template_data;
+      }
+
+      if (longpoll_supported && !current_template.longpollid.empty()) {
+        HttpEndpoint longpoll_endpoint = rpc_endpoint;
+        if (!current_template.longpolluri.empty()) {
+          if (!parse_http_endpoint(current_template.longpolluri, &rpc_endpoint,
+                                   longpoll_endpoint, update_error)) {
+            std::lock_guard<std::mutex> lock(output_mutex);
+            std::cerr << "Longpoll endpoint parse failed: " << update_error << "\n";
+            longpoll_supported = false;
+            continue;
+          }
+        }
+
+        RpcClient longpoll_client(longpoll_endpoint.host, longpoll_endpoint.port,
+                                  auth_header, longpoll_endpoint.path);
+        fetched = fetch_block_template(longpoll_client, payout_script, next_template,
+                                       update_error, &current_template.longpollid,
+                                       &stop_flag);
+        if (!fetched) {
+          if (stop_flag.load(std::memory_order_relaxed)) {
+            break;
+          }
+          std::lock_guard<std::mutex> lock(output_mutex);
+          std::cerr << "Longpoll refresh failed: " << update_error << "\n";
+          longpoll_supported = false;
+          continue;
+        }
+      } else {
+        const int wait_seconds = std::max(1, config.template_poll_seconds);
+        if (!refresh_now.exchange(false, std::memory_order_relaxed)) {
+          bool should_refresh = false;
+          for (int i = 0; i < wait_seconds && !stop_flag.load(std::memory_order_relaxed); ++i) {
+            if (refresh_now.exchange(false, std::memory_order_relaxed)) {
+              should_refresh = true;
+              break;
+            }
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+          }
+          if (!should_refresh && stop_flag.load(std::memory_order_relaxed)) {
+            break;
+          }
+        }
+
+        if (!fetch_block_template(rpc, payout_script, next_template, update_error)) {
+          std::lock_guard<std::mutex> lock(output_mutex);
+          std::cerr << "Template refresh failed: " << update_error << "\n";
+          continue;
+        }
       }
 
       bool changed = false;
@@ -1463,6 +1598,8 @@ int run_solo_miner(const SoloConfig& config) {
           template_cv.notify_all();
         }
       }
+
+      longpoll_supported = !shared_state.template_data.longpollid.empty();
 
       if (changed) {
         std::lock_guard<std::mutex> lock(output_mutex);

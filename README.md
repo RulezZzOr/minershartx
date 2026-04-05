@@ -220,6 +220,7 @@ and also `TempC/PowerW/Fan%` when `nvidia-smi` telemetry is available (otherwise
 
 Solo mode mines against your own Bitcoin Core node and submits full blocks directly.
 The block reward goes to the payout address you provide, or to a wallet address if you omit `--address`.
+When the node advertises `longpollid`, the miner uses `getblocktemplate` longpoll to refresh work immediately.
 
 ```powershell
 .\build\minershartx.exe --mode solo --rpc-url http://127.0.0.1:8332 --address <YOUR_BTC_ADDRESS> --device 0 --threads 256 --blocks 4080 --chunk-nonces 4294967296
@@ -234,6 +235,7 @@ RPC authentication:
 - If your Bitcoin Core node uses the default cookie auth, the miner auto-detects `.cookie`
 - You can also pass `--rpc-user` and `--rpc-pass`
 - Use `--rpc-cookie <path>` if your cookie file is in a custom datadir
+- `--rpc-url` may include a path, for example `http://127.0.0.1:8332/wallet/<walletname>`
 
 If you omit `--address`, the miner calls `getnewaddress` on the wallet RPC and pays the block reward there.
 
@@ -318,5 +320,4 @@ Optional Linux env vars for `run_pool_linux.sh`:
 ## Known limitations
 
 - Experimental codebase
-- Solo mode uses periodic template refreshes rather than a longpoll worker
 - No `mining.set_extranonce` handling yet
