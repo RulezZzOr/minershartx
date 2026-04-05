@@ -202,6 +202,14 @@ chmod +x scripts/run_pool_linux.sh
 MINER_USER="<BTC_ADDRESS.WORKER>" ./scripts/run_pool_linux.sh
 ```
 
+For header debugging:
+
+```bash
+MINER_USER="<BTC_ADDRESS.WORKER>" MINER_DEBUG_POOL_HEADER=1 ./scripts/run_pool_linux.sh
+```
+
+The Windows pool helper scripts also honor `MINER_DEBUG_POOL_HEADER=1`.
+
 By default, the Linux helpers mine on all detected CUDA devices. Override with
 `MINER_DEVICE=0` or `MINER_DEVICE=0,1` if you want a subset.
 
@@ -216,6 +224,7 @@ Optional Linux env vars for `run_pool_linux.sh`:
 - `MINER_CHUNK_NONCES` (default: `4294967296`)
 - `MINER_NONCE_BE` (`1` or `0`, default: `0`)
 - `MINER_POOL_DIFFICULTY` (default: `10000`)
+- `MINER_DEBUG_POOL_HEADER` (`1` or `0`, default: `0`)
 
 ## CLI options
 
@@ -228,6 +237,7 @@ Optional Linux env vars for `run_pool_linux.sh`:
 - `--seconds <value>` (benchmark mode)
 - `--pool <host:port>` (pool mode)
 - `--pool-difficulty <value>` (pool mode, request/floor difficulty)
+- `--debug-pool-header` (pool mode, print 80-byte header and components)
 - `--user <username>` (pool mode, required)
 - `--pass <password>` (pool mode)
 - `--nonce-submit-be` (pool mode)

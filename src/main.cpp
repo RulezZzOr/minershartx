@@ -42,6 +42,7 @@ void print_usage(const char* exe) {
       << "  --user <username>        Stratum username (required in pool mode)\n"
       << "  --pass <password>        Stratum password (default: x)\n"
       << "  --pool-difficulty <diff>  Request and floor pool difficulty (e.g. 10000)\n"
+      << "  --debug-pool-header      Print 80-byte header and component fields\n"
       << "  --nonce-submit-be        Submit nonce in big-endian hex (default: little-endian)\n"
       << "\n"
       << "Solo mode options:\n"
@@ -239,6 +240,11 @@ int parse_args(int argc, char** argv, AppConfig& config) {
         std::cerr << "Invalid value for --pool-difficulty\n";
         return -1;
       }
+      continue;
+    }
+
+    if (arg == "--debug-pool-header") {
+      config.pool.debug_pool_header = true;
       continue;
     }
 

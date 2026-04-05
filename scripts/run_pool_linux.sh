@@ -19,6 +19,7 @@ blocks="${MINER_BLOCKS:-4080}"
 chunk_nonces="${MINER_CHUNK_NONCES:-4294967296}"
 nonce_be="${MINER_NONCE_BE:-0}"
 pool_difficulty="${MINER_POOL_DIFFICULTY:-10000}"
+debug_pool_header="${MINER_DEBUG_POOL_HEADER:-0}"
 
 if [[ -z "$user" ]]; then
   echo "ERROR: MINER_USER is required (e.g. BTC_ADDRESS.worker)." >&2
@@ -43,11 +44,15 @@ cmd=(
 if [[ "$nonce_be" == "1" ]]; then
   cmd+=(--nonce-submit-be)
 fi
+if [[ "$debug_pool_header" == "1" ]]; then
+  cmd+=(--debug-pool-header)
+fi
 
 echo "Starting miner on Linux..."
 echo "Pool: $pool"
 echo "User: $user"
 echo "Device: $device Threads: $threads Blocks: $blocks Chunk: $chunk_nonces Diff: $pool_difficulty"
+echo "Debug pool header: $debug_pool_header"
 echo
 
 "${cmd[@]}"

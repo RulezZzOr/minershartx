@@ -11,6 +11,7 @@ struct PoolConfig {
   std::string user;
   std::string pass;
   double requested_diff = 0.0;
+  bool debug_pool_header = false;
   bool submit_nonce_be = false;
   std::vector<int> devices;
   int blocks = 0;

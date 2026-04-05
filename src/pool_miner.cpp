@@ -430,6 +430,7 @@ bool build_work_header(const StratumJob& job,
                        const std::vector<std::uint8_t>& extranonce1,
                        const int extranonce2_size,
                        const std::uint64_t extranonce2_counter,
+                       std::array<std::uint8_t, 32>& merkle_header_out,
                        std::array<std::uint8_t, 80>& header,
                        std::string& extranonce2_hex,
                        std::string& ntime_submit_hex,
@@ -460,6 +461,7 @@ bool build_work_header(const StratumJob& job,
 
   std::array<std::uint8_t, 32> merkle_header = merkle;
   reverse_bytes_32(merkle_header);
+  merkle_header_out = merkle_header;
 
   header.fill(0);
   std::memcpy(header.data() + 0, job.version_le.data(), 4);
@@ -669,6 +671,38 @@ std::string right_trim_to_width(const std::string& value, const std::size_t widt
   return value.substr(value.size() - width);
 }
 
+void print_pool_header_debug(const char* phase,
+                             const int device,
+                             const StratumJob& job,
+                             const std::array<std::uint8_t, 80>& header,
+                             const std::array<std::uint8_t, 32>& merkle_header,
+                             const std::string& ex2_hex,
+                             const std::string& ntime_hex,
+                             const std::string& nonce_submit_hex,
+                             const double diff,
+                             const bool nonce_submit_be) {
+  std::cout << "[pool-debug] " << phase
+            << " GPU " << device
+            << " job=" << job.job_id
+            << " diff=" << format_compact_diff(diff)
+            << " submit_mode=" << (nonce_submit_be ? "BE" : "LE")
+            << " ex2=" << ex2_hex
+            << " ntime=" << ntime_hex
+            << " nonce_submit=" << nonce_submit_hex
+            << "\n";
+  std::cout << "[pool-debug] fields version="
+            << bytes_to_hex(header.data(), 4)
+            << " prevhash=" << bytes_to_hex(header.data() + 4, 32)
+            << " merkle=" << bytes_to_hex(merkle_header.data(), 32)
+            << " ntime=" << bytes_to_hex(header.data() + 68, 4)
+            << " nbits=" << bytes_to_hex(header.data() + 72, 4)
+            << " nonce=" << bytes_to_hex(header.data() + 76, 4)
+            << "\n";
+  std::cout << "[pool-debug] header="
+            << bytes_to_hex(header.data(), header.size())
+            << "\n";
+}
+
 void print_pool_stats_header() {
   std::cout
       << "------------------------------------------------------------------------------------------------------------------------\n"
@@ -808,7 +842,9 @@ int run_pool_miner(const PoolConfig& config) {
       std::string current_ex2_hex;
       std::string current_ntime_hex;
       std::string current_nonce_hex;
+      std::array<std::uint8_t, 32> current_merkle_header{};
       Uint256 current_target{};
+      double current_diff = 0.0;
       std::uint64_t current_generation = 0;
 
       std::uint32_t scanned_in_space = 0;
@@ -845,16 +881,24 @@ int run_pool_miner(const PoolConfig& config) {
           }
 
           if (!build_work_header(local_job.job, local_job.extranonce1, local_job.extranonce2_size,
-                                 full_ex2, current_header, current_ex2_hex,
+                                 full_ex2, current_merkle_header, current_header, current_ex2_hex,
                                  current_ntime_hex, current_nonce_hex)) {
             continue;
           }
           std::uint32_t dummy_nonce = 0;
           build_midstate_from_header(current_header, current_midstate, current_tail0,
                                      current_tail1, current_tail2, dummy_nonce);
+          if (config.debug_pool_header) {
+            std::lock_guard<std::mutex> lock(socket_mutex);
+            print_pool_header_debug("base", device, local_job.job, current_header,
+                                    current_merkle_header, current_ex2_hex,
+                                    current_ntime_hex, current_nonce_hex,
+                                    local_job.diff, active_nonce_submit_be);
+          }
         }
 
         current_target = local_job.share_target;
+        current_diff = local_job.diff;
 
         const std::uint64_t remaining = 4294967296ULL - scanned_in_space;
         const std::uint64_t to_scan = std::min(tuned_chunk, remaining);
@@ -885,6 +929,16 @@ int run_pool_miner(const PoolConfig& config) {
         if (scan_result.found) {
           std::array<std::uint8_t, 80> verify_header = current_header;
           store_le32(scan_result.nonce, verify_header.data() + 76U);
+          const std::string verify_nonce_hex =
+              format_nonce_submit_hex(scan_result.nonce, active_nonce_submit_be);
+
+          if (config.debug_pool_header) {
+            std::lock_guard<std::mutex> lock(socket_mutex);
+            print_pool_header_debug("submit", device, local_job.job, verify_header,
+                                    current_merkle_header, current_ex2_hex,
+                                    current_ntime_hex, verify_nonce_hex,
+                                    current_diff, active_nonce_submit_be);
+          }
 
           std::array<std::uint8_t, 32> verify_hash_be{};
           sha256d(verify_header.data(), verify_header.size(), verify_hash_be);
@@ -909,7 +963,7 @@ int run_pool_miner(const PoolConfig& config) {
                       << " cpu_hash=" << verify_hash_hex << "\n";
           } else {
             const bool nonce_submit_be = active_nonce_submit_be;
-            current_nonce_hex = format_nonce_submit_hex(scan_result.nonce, nonce_submit_be);
+            current_nonce_hex = verify_nonce_hex;
 
             const int request_id = static_cast<int>(submit_id++);
             json params = json::array({config.user, current_job_id, current_ex2_hex,
