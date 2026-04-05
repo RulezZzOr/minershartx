@@ -1,5 +1,6 @@
 #include "solo_miner.h"
 
+#include "address_decoder.h"
 #include "cuda_scan.h"
 #include "sha256_cpu.h"
 
@@ -888,6 +889,11 @@ bool resolve_payout_script(const RpcClient& client,
       return false;
     }
     address = result.get<std::string>();
+  }
+
+  if (decode_bitcoin_address_script(address, payout_script, error)) {
+    payout_address = address;
+    return true;
   }
 
   json address_info;

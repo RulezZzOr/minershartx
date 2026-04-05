@@ -236,6 +236,8 @@ RPC authentication:
 - You can also pass `--rpc-user` and `--rpc-pass`
 - Use `--rpc-cookie <path>` if your cookie file is in a custom datadir
 - `--rpc-url` may include a path, for example `http://127.0.0.1:8332/wallet/<walletname>`
+- If you provide `--address`, standard Bitcoin addresses are decoded locally and do not require wallet RPC access for payout-script resolution
+- If you omit `--address`, the miner still needs wallet RPC access to call `getnewaddress`
 
 If you omit `--address`, the miner calls `getnewaddress` on the wallet RPC and pays the block reward there.
 

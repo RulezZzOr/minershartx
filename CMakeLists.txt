@@ -14,6 +14,7 @@ endif()
 
 add_executable(minershartx
   src/main.cpp
+  src/address_decoder.cpp
   src/pool_miner.cpp
   src/solo_miner.cpp
   src/sha256_cpu.cpp
@@ -57,7 +58,9 @@ set_target_properties(minershartx PROPERTIES
 
 if(BUILD_TESTING)
   add_executable(minershartx_selftest
+    tests/test_address.cpp
     tests/test_sha256.cpp
+    src/address_decoder.cpp
     src/sha256_cpu.cpp
   )
 
