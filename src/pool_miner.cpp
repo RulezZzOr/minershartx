@@ -720,6 +720,10 @@ int run_pool_miner(const PoolConfig& config) {
   std::mutex job_mutex;
   std::condition_variable job_cv;
   SharedJob shared_job;
+  if (config.requested_diff > 0.0) {
+    shared_job.diff = config.requested_diff;
+  }
+  shared_job.share_target = target_from_difficulty(shared_job.diff);
   std::atomic<bool> stop_flag{false};
 
   std::mutex socket_mutex;
@@ -951,6 +955,7 @@ int run_pool_miner(const PoolConfig& config) {
 
   bool got_subscribe = false;
   bool got_authorize = false;
+  bool suggested_difficulty_sent = false;
 
   auto hashrate_t0 = std::chrono::steady_clock::now();
   auto hashrate_last = hashrate_t0;
@@ -996,6 +1001,7 @@ int run_pool_miner(const PoolConfig& config) {
 
     got_subscribe = false;
     got_authorize = false;
+    suggested_difficulty_sent = false;
     reconnect_backoff_s = 1;
     socket_needs_reconnect.store(false, std::memory_order_relaxed);
 
@@ -1083,6 +1089,19 @@ int run_pool_miner(const PoolConfig& config) {
           got_authorize = true;
           std::lock_guard<std::mutex> slock(socket_mutex);
           std::cout << "Authorized as " << config.user << "\n";
+
+          if (config.requested_diff > 0.0 && !suggested_difficulty_sent) {
+            const int suggest_id = 3;
+            if (!sock.send_line(make_json_request(
+                    suggest_id, "mining.suggest_difficulty",
+                    json::array({config.requested_diff})))) {
+              std::cerr << "Failed to send mining.suggest_difficulty\n";
+              socket_needs_reconnect.store(true, std::memory_order_relaxed);
+              break;
+            }
+            suggested_difficulty_sent = true;
+            std::cout << "Requested pool difficulty: " << config.requested_diff << "\n";
+          }
           continue;
         }
 
@@ -1202,15 +1221,24 @@ int run_pool_miner(const PoolConfig& config) {
         if (method == "mining.set_difficulty") {
           if (msg.contains("params") && msg["params"].is_array() &&
               !msg["params"].empty() && msg["params"][0].is_number()) {
-            double diff = msg["params"][0].get<double>();
+            const double pool_diff = msg["params"][0].get<double>();
+            const double effective_diff =
+                (config.requested_diff > 0.0 && pool_diff < config.requested_diff)
+                    ? config.requested_diff
+                    : pool_diff;
 
             std::lock_guard<std::mutex> lock(job_mutex);
-            shared_job.diff = diff;
-            shared_job.share_target = target_from_difficulty(diff);
+            shared_job.diff = effective_diff;
+            shared_job.share_target = target_from_difficulty(effective_diff);
             job_cv.notify_all();
 
             std::lock_guard<std::mutex> slock(socket_mutex);
-            std::cout << "Difficulty update: " << diff << "\n";
+            std::cout << "Difficulty update: pool=" << pool_diff;
+            if (effective_diff != pool_diff) {
+              std::cout << " effective=" << effective_diff
+                        << " (floor=" << config.requested_diff << ")";
+            }
+            std::cout << "\n";
           }
           continue;
         }

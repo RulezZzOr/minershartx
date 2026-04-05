@@ -3,6 +3,7 @@
 #include "solo_miner.h"
 
 #include <exception>
+#include <cmath>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -40,6 +41,7 @@ void print_usage(const char* exe) {
       << "  --pool <host:port>       Stratum pool endpoint (default: poolflix.eu:5555)\n"
       << "  --user <username>        Stratum username (required in pool mode)\n"
       << "  --pass <password>        Stratum password (default: x)\n"
+      << "  --pool-difficulty <diff>  Request and floor pool difficulty (e.g. 10000)\n"
       << "  --nonce-submit-be        Submit nonce in big-endian hex (default: little-endian)\n"
       << "\n"
       << "Solo mode options:\n"
@@ -223,6 +225,18 @@ int parse_args(int argc, char** argv, AppConfig& config) {
 
     if (arg == "--pass") {
       if (!next_value("--pass", config.pool.pass)) {
+        return -1;
+      }
+      continue;
+    }
+
+    if (arg == "--pool-difficulty") {
+      std::string value;
+      if (!next_value("--pool-difficulty", value) ||
+          !parse_double(value, config.pool.requested_diff) ||
+          !std::isfinite(config.pool.requested_diff) ||
+          config.pool.requested_diff <= 0.0) {
+        std::cerr << "Invalid value for --pool-difficulty\n";
         return -1;
       }
       continue;

@@ -14,13 +14,15 @@ if not exist "%EXE%" (
 set "POOL=poolflix.eu:3333"
 set "USER=bc1qn2q5pede0fk3ul4v4ajw5eaavzjn6uy66f6fdr.rtx5090"
 set "PASS=x"
+set "POOL_DIFFICULTY=10000"
 
 echo Starting miner on RTX 5090...
 echo Pool: %POOL%
 echo User: %USER%
+echo Pool difficulty: %POOL_DIFFICULTY%
 echo.
 
-"%EXE%" --mode pool --pool %POOL% --user %USER% --pass %PASS% --device 0 --threads 256 --blocks 4080 --chunk-nonces 4294967296
+"%EXE%" --mode pool --pool %POOL% --user %USER% --pass %PASS% --pool-difficulty %POOL_DIFFICULTY% --device 0 --threads 256 --blocks 4080 --chunk-nonces 4294967296
 
 set "EXITCODE=%ERRORLEVEL%"
 echo.

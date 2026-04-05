@@ -18,6 +18,7 @@ threads="${MINER_THREADS:-256}"
 blocks="${MINER_BLOCKS:-4080}"
 chunk_nonces="${MINER_CHUNK_NONCES:-4294967296}"
 nonce_be="${MINER_NONCE_BE:-0}"
+pool_difficulty="${MINER_POOL_DIFFICULTY:-10000}"
 
 if [[ -z "$user" ]]; then
   echo "ERROR: MINER_USER is required (e.g. BTC_ADDRESS.worker)." >&2
@@ -32,6 +33,7 @@ cmd=(
   --pool "$pool"
   --user "$user"
   --pass "$pass"
+  --pool-difficulty "$pool_difficulty"
   --device "$device"
   --threads "$threads"
   --blocks "$blocks"
@@ -45,7 +47,7 @@ fi
 echo "Starting miner on Linux..."
 echo "Pool: $pool"
 echo "User: $user"
-echo "Device: $device Threads: $threads Blocks: $blocks Chunk: $chunk_nonces"
+echo "Device: $device Threads: $threads Blocks: $blocks Chunk: $chunk_nonces Diff: $pool_difficulty"
 echo
 
 "${cmd[@]}"

@@ -14,6 +14,8 @@ It supports **NVIDIA CUDA on Windows and Linux**.
 - This is an experimental miner core, not production-grade yet.
 - For BTC `SHA-256`, GPUs are typically far behind modern ASIC miners.
 - Current share target calculation uses integer difficulty (`set_difficulty` is floored).
+- Pool mode can also request a minimum difficulty floor with `--pool-difficulty <value>`.
+  The pool may ignore the suggestion, but the miner will not scan below that floor.
 
 ## Requirements (Windows)
 
@@ -124,13 +126,13 @@ Optional tuning:
 Known good starting point for RTX 5090 (pool mode):
 
 ```powershell
-.\build\minershartx.exe --mode pool --pool poolflix.eu:3333 --user <BTC_ADDRESS.WORKER> --pass x --device 0 --threads 256 --blocks 4080 --chunk-nonces 4294967296
+.\build\minershartx.exe --mode pool --pool poolflix.eu:3333 --user <BTC_ADDRESS.WORKER> --pass x --pool-difficulty 10000 --device 0 --threads 256 --blocks 4080 --chunk-nonces 4294967296
 ```
 
 ## Pool mode (PoolFlix example)
 
 ```powershell
-.\build\minershartx.exe --mode pool --pool poolflix.eu:5555 --user <BTC_ADDRESS.WORKER> --pass x --device 0
+.\build\minershartx.exe --mode pool --pool poolflix.eu:5555 --user <BTC_ADDRESS.WORKER> --pass x --pool-difficulty 10000 --device 0
 ```
 
 ```bash
@@ -207,6 +209,7 @@ Optional Linux env vars for `run_pool_linux.sh`:
 - `MINER_BLOCKS` (default: `4080`)
 - `MINER_CHUNK_NONCES` (default: `4294967296`)
 - `MINER_NONCE_BE` (`1` or `0`, default: `0`)
+- `MINER_POOL_DIFFICULTY` (default: `10000`)
 
 ## CLI options
 
@@ -218,6 +221,7 @@ Optional Linux env vars for `run_pool_linux.sh`:
 - `--chunk-nonces <value>` (0 = auto)
 - `--seconds <value>` (benchmark mode)
 - `--pool <host:port>` (pool mode)
+- `--pool-difficulty <value>` (pool mode, request/floor difficulty)
 - `--user <username>` (pool mode, required)
 - `--pass <password>` (pool mode)
 - `--nonce-submit-be` (pool mode)

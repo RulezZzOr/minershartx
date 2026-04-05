@@ -10,6 +10,7 @@ struct PoolConfig {
   std::string pool;
   std::string user;
   std::string pass;
+  double requested_diff = 0.0;
   bool submit_nonce_be = false;
   std::vector<int> devices;
   int blocks = 0;
