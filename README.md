@@ -190,7 +190,7 @@ Optional Linux env vars for `run_solo_linux.sh`:
 - `MINER_RPC_USER`
 - `MINER_RPC_PASS`
 - `MINER_RPC_COOKIE`
-- `MINER_DEVICE` (default: `0`)
+- `MINER_DEVICE` (default: `all`)
 - `MINER_THREADS` (default: `256`)
 - `MINER_BLOCKS` (default: `4080`)
 - `MINER_CHUNK_NONCES` (default: `4294967296`)
@@ -202,12 +202,15 @@ chmod +x scripts/run_pool_linux.sh
 MINER_USER="<BTC_ADDRESS.WORKER>" ./scripts/run_pool_linux.sh
 ```
 
+By default, the Linux helpers mine on all detected CUDA devices. Override with
+`MINER_DEVICE=0` or `MINER_DEVICE=0,1` if you want a subset.
+
 Optional Linux env vars for `run_pool_linux.sh`:
 
 - `MINER_POOL` (default: `poolflix.eu:3333`)
 - `MINER_USER` (required)
 - `MINER_PASS` (default: `x`)
-- `MINER_DEVICE` (default: `0`)
+- `MINER_DEVICE` (default: `all`)
 - `MINER_THREADS` (default: `256`)
 - `MINER_BLOCKS` (default: `4080`)
 - `MINER_CHUNK_NONCES` (default: `4294967296`)

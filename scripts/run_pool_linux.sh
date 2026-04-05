@@ -13,7 +13,7 @@ fi
 pool="${MINER_POOL:-poolflix.eu:3333}"
 user="${MINER_USER:-}"
 pass="${MINER_PASS:-x}"
-device="${MINER_DEVICE:-0}"
+device="${MINER_DEVICE:-all}"
 threads="${MINER_THREADS:-256}"
 blocks="${MINER_BLOCKS:-4080}"
 chunk_nonces="${MINER_CHUNK_NONCES:-4294967296}"
