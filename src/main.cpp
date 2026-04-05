@@ -1,29 +1,34 @@
 #include "cuda_scan.h"
 #include "pool_miner.h"
+#include "solo_miner.h"
 
 #include <exception>
 #include <iostream>
+#include <sstream>
 #include <string>
+#include <vector>
 
 namespace {
 
 enum class RunMode {
   kBenchmark,
   kPool,
+  kSolo,
 };
 
 struct AppConfig {
   RunMode mode = RunMode::kBenchmark;
   miner::BenchmarkConfig benchmark{};
   miner::PoolConfig pool{};
+  miner::SoloConfig solo{};
 };
 
 void print_usage(const char* exe) {
   std::cout
       << "Usage: " << exe << " [options]\n\n"
       << "Common options:\n"
-      << "  --mode <benchmark|pool>  Run mode (default: benchmark)\n"
-      << "  --device <id>            CUDA device index (default: 0)\n"
+      << "  --mode <benchmark|pool|solo> Run mode (default: benchmark)\n"
+      << "  --device <id,id|all>     CUDA device indices (default: all)\n"
       << "  --threads <value>        CUDA threads per block, multiple of 32 (default: 256)\n"
       << "  --blocks <value>         CUDA blocks per launch (default: auto)\n"
       << "  --chunk-nonces <value>   Nonces processed in one kernel launch (default: auto)\n"
@@ -36,6 +41,13 @@ void print_usage(const char* exe) {
       << "  --user <username>        Stratum username (required in pool mode)\n"
       << "  --pass <password>        Stratum password (default: x)\n"
       << "  --nonce-submit-be        Submit nonce in big-endian hex (default: little-endian)\n"
+      << "\n"
+      << "Solo mode options:\n"
+      << "  --rpc-url <url>          Bitcoin Core RPC endpoint (default: http://127.0.0.1:8332)\n"
+      << "  --rpc-user <user>        Bitcoin Core RPC username (optional with cookie auth)\n"
+      << "  --rpc-pass <pass>        Bitcoin Core RPC password (optional with cookie auth)\n"
+      << "  --rpc-cookie <path>      Bitcoin Core cookie file (default autodetect)\n"
+      << "  --address <addr>         Payout address for block reward (optional, defaults to wallet new address)\n"
       << "\n"
       << "  --help                   Show this help\n";
 }
@@ -85,6 +97,7 @@ bool parse_double(const std::string& value, double& out) {
 int parse_args(int argc, char** argv, AppConfig& config) {
   config.pool.pool = "poolflix.eu:5555";
   config.pool.pass = "x";
+  config.solo.rpc_url = "http://127.0.0.1:8332";
 
   for (int i = 1; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -112,8 +125,10 @@ int parse_args(int argc, char** argv, AppConfig& config) {
         config.mode = RunMode::kBenchmark;
       } else if (value == "pool") {
         config.mode = RunMode::kPool;
+      } else if (value == "solo") {
+        config.mode = RunMode::kSolo;
       } else {
-        std::cerr << "Invalid value for --mode (expected benchmark|pool)\n";
+        std::cerr << "Invalid value for --mode (expected benchmark|pool|solo)\n";
         return -1;
       }
       continue;
@@ -121,13 +136,26 @@ int parse_args(int argc, char** argv, AppConfig& config) {
 
     if (arg == "--device") {
       std::string value;
-      int parsed = 0;
-      if (!next_value("--device", value) || !parse_int(value, parsed)) {
-        std::cerr << "Invalid value for --device\n";
+      if (!next_value("--device", value)) {
         return -1;
       }
-      config.benchmark.device = parsed;
-      config.pool.device = parsed;
+      config.benchmark.devices.clear();
+      config.pool.devices.clear();
+      config.solo.devices.clear();
+      if (value != "all") {
+        std::stringstream ss(value);
+        std::string token;
+        while (std::getline(ss, token, ',')) {
+          int parsed = 0;
+          if (!parse_int(token, parsed)) {
+            std::cerr << "Invalid value for --device: " << token << "\n";
+            return -1;
+          }
+          config.benchmark.devices.push_back(parsed);
+          config.pool.devices.push_back(parsed);
+          config.solo.devices.push_back(parsed);
+        }
+      }
       continue;
     }
 
@@ -140,6 +168,7 @@ int parse_args(int argc, char** argv, AppConfig& config) {
       }
       config.benchmark.threads = parsed;
       config.pool.threads = parsed;
+      config.solo.threads = parsed;
       continue;
     }
 
@@ -152,6 +181,7 @@ int parse_args(int argc, char** argv, AppConfig& config) {
       }
       config.benchmark.blocks = parsed;
       config.pool.blocks = parsed;
+      config.solo.blocks = parsed;
       continue;
     }
 
@@ -164,6 +194,7 @@ int parse_args(int argc, char** argv, AppConfig& config) {
       }
       config.benchmark.chunk_nonces = parsed;
       config.pool.chunk_nonces = parsed;
+      config.solo.chunk_nonces = parsed;
       continue;
     }
 
@@ -192,6 +223,41 @@ int parse_args(int argc, char** argv, AppConfig& config) {
 
     if (arg == "--pass") {
       if (!next_value("--pass", config.pool.pass)) {
+        return -1;
+      }
+      continue;
+    }
+
+    if (arg == "--rpc-url") {
+      if (!next_value("--rpc-url", config.solo.rpc_url)) {
+        return -1;
+      }
+      continue;
+    }
+
+    if (arg == "--rpc-user") {
+      if (!next_value("--rpc-user", config.solo.rpc_user)) {
+        return -1;
+      }
+      continue;
+    }
+
+    if (arg == "--rpc-pass") {
+      if (!next_value("--rpc-pass", config.solo.rpc_pass)) {
+        return -1;
+      }
+      continue;
+    }
+
+    if (arg == "--rpc-cookie") {
+      if (!next_value("--rpc-cookie", config.solo.rpc_cookie_path)) {
+        return -1;
+      }
+      continue;
+    }
+
+    if (arg == "--address") {
+      if (!next_value("--address", config.solo.address)) {
         return -1;
       }
       continue;
@@ -227,6 +293,21 @@ int parse_args(int argc, char** argv, AppConfig& config) {
     return -1;
   }
 
+  if (config.benchmark.devices.empty()) {
+    int count = 0;
+    if (miner::get_cuda_device_count(count) == 0 && count > 0) {
+      for (int i = 0; i < count; ++i) {
+        config.benchmark.devices.push_back(i);
+        config.pool.devices.push_back(i);
+        config.solo.devices.push_back(i);
+      }
+    } else {
+      config.benchmark.devices.push_back(0);
+      config.pool.devices.push_back(0);
+      config.solo.devices.push_back(0);
+    }
+  }
+
   return 0;
 }
 
@@ -247,5 +328,9 @@ int main(int argc, char** argv) {
     return miner::run_benchmark(config.benchmark);
   }
 
-  return miner::run_pool_miner(config.pool);
+  if (config.mode == RunMode::kPool) {
+    return miner::run_pool_miner(config.pool);
+  }
+
+  return miner::run_solo_miner(config.solo);
 }

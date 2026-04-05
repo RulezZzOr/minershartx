@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace miner {
 
@@ -10,7 +11,7 @@ struct PoolConfig {
   std::string user;
   std::string pass;
   bool submit_nonce_be = false;
-  int device = 0;
+  std::vector<int> devices;
   int blocks = 0;
   int threads = 256;
   std::uint64_t chunk_nonces = 0;

@@ -4,13 +4,17 @@
 #include <cuda_runtime.h>
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <iomanip>
 #include <iostream>
+#include <mutex>
 #include <new>
+#include <thread>
+#include <vector>
 
 namespace miner {
 
@@ -37,11 +41,6 @@ struct ScanEngine {
 };
 
 namespace {
-
-constexpr std::uint32_t kSha256Init[8] = {
-    0x6a09e667U, 0xbb67ae85U, 0x3c6ef372U, 0xa54ff53aU,
-    0x510e527fU, 0x9b05688cU, 0x1f83d9abU, 0x5be0cd19U,
-};
 
 __constant__ std::uint32_t kSha256InitDevice[8] = {
     0x6a09e667U, 0xbb67ae85U, 0x3c6ef372U, 0xa54ff53aU,
@@ -127,15 +126,10 @@ __device__ __forceinline__ std::uint32_t bswap32(const std::uint32_t x) {
 
 __device__ __forceinline__ void sha256_compress_device(std::uint32_t state[8],
                                                         const std::uint32_t block[16]) {
-  std::uint32_t w[64];
+  std::uint32_t w[16];
 #pragma unroll
   for (int i = 0; i < 16; ++i) {
     w[i] = block[i];
-  }
-#pragma unroll
-  for (int i = 16; i < 64; ++i) {
-    w[i] = small_sigma1(w[i - 2]) + w[i - 7] + small_sigma0(w[i - 15]) +
-           w[i - 16];
   }
 
   std::uint32_t a = state[0];
@@ -148,9 +142,31 @@ __device__ __forceinline__ void sha256_compress_device(std::uint32_t state[8],
   std::uint32_t h = state[7];
 
 #pragma unroll
-  for (int i = 0; i < 64; ++i) {
+  for (int i = 0; i < 16; ++i) {
+    const std::uint32_t wi = w[i];
     const std::uint32_t t1 = h + big_sigma1(e) + ch(e, f, g) + kSha256KDevice[i] +
-                             w[i];
+                             wi;
+    const std::uint32_t t2 = big_sigma0(a) + maj(a, b, c);
+    h = g;
+    g = f;
+    f = e;
+    e = d + t1;
+    d = c;
+    c = b;
+    b = a;
+    a = t1 + t2;
+  }
+
+#pragma unroll
+  for (int i = 16; i < 64; ++i) {
+    const int j = i & 15;
+    const std::uint32_t s0 = small_sigma0(w[(j + 1) & 15]);
+    const std::uint32_t s1 = small_sigma1(w[(j + 14) & 15]);
+    const std::uint32_t wi = w[j] + s0 + w[(j + 9) & 15] + s1;
+    w[j] = wi;
+
+    const std::uint32_t t1 = h + big_sigma1(e) + ch(e, f, g) + kSha256KDevice[i] +
+                             wi;
     const std::uint32_t t2 = big_sigma0(a) + maj(a, b, c);
     h = g;
     g = f;
@@ -172,10 +188,10 @@ __device__ __forceinline__ void sha256_compress_device(std::uint32_t state[8],
   state[7] += h;
 }
 
-__device__ __forceinline__ void sha256d_hash_words_le(
+__device__ __forceinline__ void sha256d_hash_words_be(
     const std::uint32_t midstate[8], const std::uint32_t tail0,
     const std::uint32_t tail1, const std::uint32_t tail2,
-    const std::uint32_t nonce_le, std::uint32_t out_hash_le[8]) {
+    const std::uint32_t nonce_le, std::uint32_t out_hash_be[8]) {
   std::uint32_t state1[8];
 #pragma unroll
   for (int i = 0; i < 8; ++i) {
@@ -218,19 +234,19 @@ __device__ __forceinline__ void sha256d_hash_words_le(
 
 #pragma unroll
   for (int i = 0; i < 8; ++i) {
-    out_hash_le[i] = bswap32(state2[i]);
+    out_hash_be[i] = state2[i];
   }
 }
 
-__device__ __forceinline__ bool hash_leq_target(const std::uint32_t hash_le[8],
-                                                 const std::uint32_t target_le[8]) {
-  for (int i = 7; i >= 0; --i) {
-    if (hash_le[i] < target_le[i]) {
-      return true;
-    }
-    if (hash_le[i] > target_le[i]) {
-      return false;
-    }
+__device__ __forceinline__ bool hash_be_meets_target_le(
+    const std::uint32_t hash_be[8], const std::uint32_t target_le[8]) {
+  // Compare as a big-endian 256-bit integer, matching the byte order emitted
+  // by sha256d_hash_words_be() and the target word order used by the host.
+  for (int i = 0; i < 8; ++i) {
+    const std::uint32_t hash_word_be = hash_be[i];
+    const std::uint32_t target_word_be = target_le[7 - i];
+    if (hash_word_be < target_word_be) return true;
+    if (hash_word_be > target_word_be) return false;
   }
   return true;
 }
@@ -243,40 +259,64 @@ __global__ void sha256d_scan_kernel(const std::uint32_t* __restrict__ midstate,
                                     const std::uint64_t total_nonces,
                                     const std::uint32_t* __restrict__ target,
                                     DeviceScanResult* result) {
+  // Poll the global "found" flag less often to reduce memory traffic in the
+  // hot loop. A share hit is rare at typical pool difficulties, so this is a
+  // good throughput/latency tradeoff.
+  constexpr std::uint32_t kFoundPollMask = 0x1FFU;  // every 512 iterations
+
   const std::uint64_t tid =
       static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   const std::uint64_t stride =
       static_cast<std::uint64_t>(gridDim.x) * blockDim.x;
+  const std::uint64_t stride2 = stride * 2ULL;
+  volatile int* found_flag = &result->found;
 
   std::uint32_t ms[8];
-  std::uint32_t target_local[8];
+  std::uint32_t target_local_le[8];
 #pragma unroll
   for (int i = 0; i < 8; ++i) {
     ms[i] = midstate[i];
-    target_local[i] = target[i];
+    target_local_le[i] = target[i];
   }
 
   std::uint32_t poll_counter = 0;
-  for (std::uint64_t i = tid; i < total_nonces; i += stride) {
-    if ((poll_counter++ & 0x3FU) == 0U && result->found != 0) {
+  for (std::uint64_t i = tid; i < total_nonces; i += stride2) {
+    if ((poll_counter++ & kFoundPollMask) == 0U && *found_flag != 0) {
       return;
     }
 
-    const std::uint32_t nonce = start_nonce + static_cast<std::uint32_t>(i);
-    std::uint32_t hash_le[8];
-    sha256d_hash_words_le(ms, tail0, tail1, tail2, nonce, hash_le);
-    if (!hash_leq_target(hash_le, target_local)) {
-      continue;
-    }
-
-    if (atomicCAS(&result->found, 0, 1) == 0) {
-      result->nonce = nonce;
+    {
+      const std::uint32_t nonce = start_nonce + static_cast<std::uint32_t>(i);
+      std::uint32_t hash_be[8];
+      sha256d_hash_words_be(ms, tail0, tail1, tail2, nonce, hash_be);
+      if (hash_be_meets_target_le(hash_be, target_local_le)) {
+        if (atomicCAS(&result->found, 0, 1) == 0) {
+          result->nonce = nonce;
 #pragma unroll
-      for (int w = 0; w < 8; ++w) {
-        result->hash_le[w] = hash_le[w];
+          for (int w = 0; w < 8; ++w) {
+            result->hash_le[w] = bswap32(hash_be[w]);
+          }
+        }
+        return;
       }
     }
-    return;
+
+    const std::uint64_t i2 = i + stride;
+    if (i2 < total_nonces) {
+      const std::uint32_t nonce2 = start_nonce + static_cast<std::uint32_t>(i2);
+      std::uint32_t hash_be2[8];
+      sha256d_hash_words_be(ms, tail0, tail1, tail2, nonce2, hash_be2);
+      if (hash_be_meets_target_le(hash_be2, target_local_le)) {
+        if (atomicCAS(&result->found, 0, 1) == 0) {
+          result->nonce = nonce2;
+#pragma unroll
+          for (int w = 0; w < 8; ++w) {
+            result->hash_le[w] = bswap32(hash_be2[w]);
+          }
+        }
+        return;
+      }
+    }
   }
 }
 
@@ -292,6 +332,7 @@ __global__ void sha256d_benchmark_kernel(const std::uint32_t* midstate,
       static_cast<std::uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   const std::uint64_t stride =
       static_cast<std::uint64_t>(gridDim.x) * blockDim.x;
+  const std::uint64_t stride2 = stride * 2ULL;
 
   std::uint32_t ms[8];
 #pragma unroll
@@ -302,12 +343,21 @@ __global__ void sha256d_benchmark_kernel(const std::uint32_t* midstate,
   std::uint64_t local_count = 0;
   std::uint32_t local_sink = 0;
 
-  for (std::uint64_t i = tid; i < total_nonces; i += stride) {
+  for (std::uint64_t i = tid; i < total_nonces; i += stride2) {
     const std::uint32_t nonce = start_nonce + static_cast<std::uint32_t>(i);
-    std::uint32_t hash_le[8];
-    sha256d_hash_words_le(ms, tail0, tail1, tail2, nonce, hash_le);
-    local_sink ^= hash_le[0] ^ hash_le[7];
+    std::uint32_t hash_be[8];
+    sha256d_hash_words_be(ms, tail0, tail1, tail2, nonce, hash_be);
+    local_sink ^= hash_be[0] ^ hash_be[7];
     ++local_count;
+
+    const std::uint64_t i2 = i + stride;
+    if (i2 < total_nonces) {
+      const std::uint32_t nonce2 = start_nonce + static_cast<std::uint32_t>(i2);
+      std::uint32_t hash_be2[8];
+      sha256d_hash_words_be(ms, tail0, tail1, tail2, nonce2, hash_be2);
+      local_sink ^= hash_be2[0] ^ hash_be2[7];
+      ++local_count;
+    }
   }
 
   if (local_count > 0) {
@@ -506,110 +556,147 @@ cleanup:
   return status;
 }
 
+int get_cuda_device_count(int& count) {
+  const cudaError_t err = cudaGetDeviceCount(&count);
+  return (err == cudaSuccess) ? 0 : 1;
+}
+
 int run_benchmark(const BenchmarkConfig& config) {
-  int status = 0;
-  int blocks = 0;
-  cudaDeviceProp props{};
-  status = resolve_device_and_launch(config.device, config.blocks, config.threads, blocks,
-                                     props);
-  if (status != 0) {
-    return status;
+  if (config.devices.empty()) {
+    std::cerr << "No devices specified for benchmark\n";
+    return 1;
   }
 
-  const std::uint64_t min_chunk =
-      static_cast<std::uint64_t>(blocks) * static_cast<std::uint64_t>(config.threads);
+  std::vector<std::thread> threads;
+  std::atomic<int> init_errors{0};
 
-  std::uint64_t chunk_nonces = config.chunk_nonces;
-  if (chunk_nonces == 0) {
-    chunk_nonces = min_chunk * 4096ULL;
+  std::mutex out_mutex;
+  double global_elapsed_s = 0.0;
+  std::uint64_t global_total_nonces = 0;
+  std::uint64_t global_launches = 0;
+  std::uint32_t global_sink = 0;
+
+  auto t_start = std::chrono::steady_clock::now();
+
+  for (const int device : config.devices) {
+    threads.emplace_back([&](const int dev) {
+      int status = 0;
+      int blocks = 0;
+      cudaDeviceProp props{};
+      status = resolve_device_and_launch(dev, config.blocks, config.threads, blocks, props);
+      if (status != 0) {
+        init_errors++;
+        return;
+      }
+
+      const std::uint64_t min_chunk =
+          static_cast<std::uint64_t>(blocks) * static_cast<std::uint64_t>(config.threads);
+
+      std::uint64_t chunk_nonces = config.chunk_nonces;
+      if (chunk_nonces == 0) {
+        chunk_nonces = min_chunk * 4096ULL;
+      }
+      if (chunk_nonces < min_chunk) {
+        chunk_nonces = min_chunk;
+      }
+
+      const auto header = make_demo_header();
+
+      std::uint32_t midstate[8] = {};
+      std::uint32_t tail0 = 0;
+      std::uint32_t tail1 = 0;
+      std::uint32_t tail2 = 0;
+      std::uint32_t start_nonce = 0;
+      build_midstate_from_header(header, midstate, tail0, tail1, tail2, start_nonce);
+
+      std::uint32_t* d_midstate = nullptr;
+      unsigned long long* d_counter = nullptr;
+      std::uint32_t* d_sink = nullptr;
+
+      if (cudaMalloc(reinterpret_cast<void**>(&d_midstate), sizeof(midstate)) != cudaSuccess ||
+          cudaMalloc(reinterpret_cast<void**>(&d_counter), sizeof(unsigned long long)) != cudaSuccess ||
+          cudaMalloc(reinterpret_cast<void**>(&d_sink), sizeof(std::uint32_t)) != cudaSuccess) {
+        init_errors++;
+        return;
+      }
+
+      {
+        const unsigned long long zero_counter = 0ULL;
+        const std::uint32_t zero_sink = 0U;
+        cudaMemcpy(d_midstate, midstate, sizeof(midstate), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_counter, &zero_counter, sizeof(zero_counter), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_sink, &zero_sink, sizeof(zero_sink), cudaMemcpyHostToDevice);
+      }
+
+      {
+        std::lock_guard<std::mutex> lock(out_mutex);
+        std::cout << "Device " << dev << ": " << props.name << " (SMs: "
+                  << props.multiProcessorCount << ", blocks: " << blocks
+                  << ", threads/block: " << config.threads << ", chunk: " << chunk_nonces << ")\n";
+      }
+
+      auto t0 = std::chrono::steady_clock::now();
+      double elapsed_s = 0.0;
+      std::uint64_t launches = 0;
+
+      do {
+        sha256d_benchmark_kernel<<<blocks, config.threads>>>(
+            d_midstate, tail0, tail1, tail2, start_nonce, chunk_nonces, d_counter, d_sink);
+        cudaGetLastError();
+        cudaDeviceSynchronize();
+
+        start_nonce += static_cast<std::uint32_t>(chunk_nonces);
+        ++launches;
+
+        const auto now = std::chrono::steady_clock::now();
+        elapsed_s = std::chrono::duration<double>(now - t0).count();
+      } while (elapsed_s < config.seconds);
+
+      unsigned long long total_nonces = 0ULL;
+      std::uint32_t sink = 0U;
+      cudaMemcpy(&total_nonces, d_counter, sizeof(total_nonces), cudaMemcpyDeviceToHost);
+      cudaMemcpy(&sink, d_sink, sizeof(sink), cudaMemcpyDeviceToHost);
+
+      {
+        std::lock_guard<std::mutex> lock(out_mutex);
+        global_total_nonces += total_nonces;
+        global_launches += launches;
+        global_sink ^= sink;
+        if (elapsed_s > global_elapsed_s) {
+          global_elapsed_s = elapsed_s;
+        }
+      }
+
+      if (d_midstate != nullptr) cudaFree(d_midstate);
+      if (d_counter != nullptr) cudaFree(d_counter);
+      if (d_sink != nullptr) cudaFree(d_sink);
+    }, device);
   }
-  if (chunk_nonces < min_chunk) {
-    chunk_nonces = min_chunk;
+
+  for (auto& t : threads) {
+    t.join();
   }
 
-  const auto header = make_demo_header();
-
-  std::uint32_t midstate[8] = {};
-  std::uint32_t tail0 = 0;
-  std::uint32_t tail1 = 0;
-  std::uint32_t tail2 = 0;
-  std::uint32_t start_nonce = 0;
-  build_midstate_from_header(header, midstate, tail0, tail1, tail2, start_nonce);
-
-  std::uint32_t* d_midstate = nullptr;
-  unsigned long long* d_counter = nullptr;
-  std::uint32_t* d_sink = nullptr;
-
-  CUDA_CHECK_GOTO(cudaMalloc(reinterpret_cast<void**>(&d_midstate), sizeof(midstate)));
-  CUDA_CHECK_GOTO(cudaMalloc(reinterpret_cast<void**>(&d_counter), sizeof(unsigned long long)));
-  CUDA_CHECK_GOTO(cudaMalloc(reinterpret_cast<void**>(&d_sink), sizeof(std::uint32_t)));
-
-  {
-    const unsigned long long zero_counter = 0ULL;
-    const std::uint32_t zero_sink = 0U;
-    CUDA_CHECK_GOTO(cudaMemcpy(d_midstate, midstate, sizeof(midstate),
-                               cudaMemcpyHostToDevice));
-    CUDA_CHECK_GOTO(cudaMemcpy(d_counter, &zero_counter, sizeof(zero_counter),
-                               cudaMemcpyHostToDevice));
-    CUDA_CHECK_GOTO(cudaMemcpy(d_sink, &zero_sink, sizeof(zero_sink),
-                               cudaMemcpyHostToDevice));
+  if (init_errors > 0) {
+    std::cerr << "Encountered " << init_errors << " errors during benchmark initialization.\n";
+    return 1;
   }
 
-  std::cout << "Device: " << props.name << "\n";
-  std::cout << "SMs: " << props.multiProcessorCount << ", blocks: " << blocks
-            << ", threads/block: " << config.threads << "\n";
-  std::cout << "Chunk nonces: " << chunk_nonces << "\n";
-  std::cout << "Benchmark target: " << config.seconds << " s\n";
+  const double total_wall_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
+  const double hashes_per_second =
+      static_cast<double>(global_total_nonces) / (total_wall_s > 0.0 ? total_wall_s : 1.0);
 
-  auto t0 = std::chrono::steady_clock::now();
-  double elapsed_s = 0.0;
-  std::uint64_t launches = 0;
+  std::cout << "\n--- Benchmark Results ---\n";
+  std::cout << std::fixed << std::setprecision(3);
+  std::cout << "Elapsed (wall): " << total_wall_s << " s\n";
+  std::cout << "Total kernel launches: " << global_launches << "\n";
+  std::cout << "Total hashes: " << global_total_nonces << "\n";
+  std::cout << "Aggregate Hashrate: " << (hashes_per_second / 1e9) << " GH/s\n";
+  std::cout << std::hex << std::showbase;
+  std::cout << "Debug sink: " << global_sink << "\n";
+  std::cout << std::dec << std::noshowbase;
 
-  do {
-    sha256d_benchmark_kernel<<<blocks, config.threads>>>(
-        d_midstate, tail0, tail1, tail2, start_nonce, chunk_nonces, d_counter,
-        d_sink);
-    CUDA_CHECK_GOTO(cudaGetLastError());
-    CUDA_CHECK_GOTO(cudaDeviceSynchronize());
-
-    start_nonce += static_cast<std::uint32_t>(chunk_nonces);
-    ++launches;
-
-    const auto now = std::chrono::steady_clock::now();
-    elapsed_s = std::chrono::duration<double>(now - t0).count();
-  } while (elapsed_s < config.seconds);
-
-  {
-    unsigned long long total_nonces = 0ULL;
-    std::uint32_t sink = 0U;
-    CUDA_CHECK_GOTO(
-        cudaMemcpy(&total_nonces, d_counter, sizeof(total_nonces), cudaMemcpyDeviceToHost));
-    CUDA_CHECK_GOTO(cudaMemcpy(&sink, d_sink, sizeof(sink), cudaMemcpyDeviceToHost));
-
-    const double hashes_per_second =
-        static_cast<double>(total_nonces) / (elapsed_s > 0.0 ? elapsed_s : 1.0);
-    std::cout << std::fixed << std::setprecision(3);
-    std::cout << "Elapsed: " << elapsed_s << " s\n";
-    std::cout << "Kernel launches: " << launches << "\n";
-    std::cout << "Total hashes: " << total_nonces << "\n";
-    std::cout << "Hashrate: " << (hashes_per_second / 1e9) << " GH/s\n";
-    std::cout << std::hex << std::showbase;
-    std::cout << "Debug sink: " << sink << "\n";
-    std::cout << std::dec << std::noshowbase;
-  }
-
-cleanup:
-  if (d_midstate != nullptr) {
-    cudaFree(d_midstate);
-  }
-  if (d_counter != nullptr) {
-    cudaFree(d_counter);
-  }
-  if (d_sink != nullptr) {
-    cudaFree(d_sink);
-  }
-
-  return status;
+  return 0;
 }
 
 }  // namespace miner

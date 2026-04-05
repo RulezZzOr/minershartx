@@ -6,6 +6,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
+include(CTest)
+
 if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
   set(CMAKE_CUDA_ARCHITECTURES native)
 endif()
@@ -13,6 +15,7 @@ endif()
 add_executable(minershartx
   src/main.cpp
   src/pool_miner.cpp
+  src/solo_miner.cpp
   src/sha256_cpu.cpp
   src/sha256_benchmark.cu
 )
@@ -48,6 +51,35 @@ if(WIN32)
 endif()
 
 set_target_properties(minershartx PROPERTIES
-  CUDA_SEPARABLE_COMPILATION ON
+  CUDA_SEPARABLE_COMPILATION OFF
   CUDA_RUNTIME_LIBRARY Shared
 )
+
+if(BUILD_TESTING)
+  add_executable(minershartx_selftest
+    tests/test_sha256.cpp
+    src/sha256_cpu.cpp
+  )
+
+  target_include_directories(minershartx_selftest PRIVATE
+    include
+    third_party
+  )
+
+  if(MSVC)
+    target_compile_options(minershartx_selftest PRIVATE
+      $<$<COMPILE_LANGUAGE:CXX>:/W4>
+      $<$<COMPILE_LANGUAGE:CXX>:/O2>
+      $<$<COMPILE_LANGUAGE:CXX>:/EHsc>
+    )
+  else()
+    target_compile_options(minershartx_selftest PRIVATE
+      $<$<COMPILE_LANGUAGE:CXX>:-O3>
+      $<$<COMPILE_LANGUAGE:CXX>:-Wall>
+      $<$<COMPILE_LANGUAGE:CXX>:-Wextra>
+      $<$<COMPILE_LANGUAGE:CXX>:-Wpedantic>
+    )
+  endif()
+
+  add_test(NAME minershartx_selftest COMMAND minershartx_selftest)
+endif()

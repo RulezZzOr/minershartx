@@ -20,7 +20,7 @@ echo Pool: %POOL%
 echo User: %USER%
 echo.
 
-"%EXE%" --mode pool --pool %POOL% --user %USER% --pass %PASS% --device 0 --threads 256 --blocks 4080 --chunk-nonces 2147483648
+"%EXE%" --mode pool --pool %POOL% --user %USER% --pass %PASS% --device 0 --threads 256 --blocks 4080 --chunk-nonces 4294967296
 
 set "EXITCODE=%ERRORLEVEL%"
 echo.

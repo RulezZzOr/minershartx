@@ -1,11 +1,12 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
 
 namespace miner {
 
 struct BenchmarkConfig {
-  int device = 0;
+  std::vector<int> devices;
   int blocks = 0;
   int threads = 256;
   double seconds = 10.0;
@@ -44,6 +45,7 @@ struct ScanEngineInfo {
 
 struct ScanEngine;
 
+int get_cuda_device_count(int& count);
 int run_benchmark(const BenchmarkConfig& config);
 int create_scan_engine(const ScanEngineConfig& config, ScanEngine*& out_engine);
 void destroy_scan_engine(ScanEngine* engine);
