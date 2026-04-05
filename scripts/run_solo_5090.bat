@@ -17,6 +17,7 @@ if not defined MINER_THREADS set "MINER_THREADS=256"
 if not defined MINER_BLOCKS set "MINER_BLOCKS=4080"
 if not defined MINER_CHUNK_NONCES set "MINER_CHUNK_NONCES=4294967296"
 
+set "CONFIG_FILE=%MINER_CONFIG%"
 set "RPC_URL=%MINER_RPC_URL%"
 set "ADDRESS=%MINER_ADDRESS%"
 set "RPC_USER=%MINER_RPC_USER%"
@@ -28,13 +29,21 @@ set "BLOCKS=%MINER_BLOCKS%"
 set "CHUNK_NONCES=%MINER_CHUNK_NONCES%"
 
 echo Starting miner in solo mode on RTX 5090...
-echo RPC: %RPC_URL%
-if defined ADDRESS echo Payout address: %ADDRESS%
-if defined RPC_COOKIE echo RPC cookie: %RPC_COOKIE%
-if defined RPC_USER echo RPC user: %RPC_USER%
+if defined CONFIG_FILE (
+  echo Config: %CONFIG_FILE%
+) else (
+  echo RPC: %RPC_URL%
+  if defined ADDRESS echo Payout address: %ADDRESS%
+  if defined RPC_COOKIE echo RPC cookie: %RPC_COOKIE%
+  if defined RPC_USER echo RPC user: %RPC_USER%
+)
 echo.
 
-"%EXE%" --mode solo --rpc-url "%RPC_URL%" --device %DEVICE% --threads %THREADS% --blocks %BLOCKS% --chunk-nonces %CHUNK_NONCES% --address "%ADDRESS%" --rpc-user "%RPC_USER%" --rpc-pass "%RPC_PASS%" --rpc-cookie "%RPC_COOKIE%"
+if defined CONFIG_FILE (
+  "%EXE%" --config "%CONFIG_FILE%"
+) else (
+  "%EXE%" --mode solo --rpc-url "%RPC_URL%" --device %DEVICE% --threads %THREADS% --blocks %BLOCKS% --chunk-nonces %CHUNK_NONCES% --address "%ADDRESS%" --rpc-user "%RPC_USER%" --rpc-pass "%RPC_PASS%" --rpc-cookie "%RPC_COOKIE%"
+)
 
 set "EXITCODE=%ERRORLEVEL%"
 echo.

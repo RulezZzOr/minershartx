@@ -1,0 +1,11 @@
+{
+  "mode": "solo",
+  "device": "all",
+  "threads": 256,
+  "blocks": 4080,
+  "chunk_nonces": 4294967296,
+  "rpc_url": "http://127.0.0.1:8332",
+  "rpc_user": "tata",
+  "rpc_pass": "secret",
+  "address": "bc1..."
+}

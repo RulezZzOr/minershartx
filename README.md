@@ -95,6 +95,71 @@ chmod +x scripts/build_linux.sh
 The Linux helper auto-detects `nvcc` from `PATH`, `CUDA_HOME`, `CUDA_PATH`, or
 `CUDAToolkit_ROOT` and passes the detected toolkit root to CMake.
 
+## JSON Config
+
+You can also load settings from a JSON file and then override them with CLI
+arguments.
+
+Example solo config:
+
+```json
+{
+  "mode": "solo",
+  "device": "all",
+  "threads": 256,
+  "blocks": 4080,
+  "chunk_nonces": 4294967296,
+  "rpc_url": "http://127.0.0.1:8332",
+  "rpc_user": "tata",
+  "rpc_pass": "secret",
+  "address": "bc1..."
+}
+```
+
+You can copy `examples/solo.example.json` as a starting point.
+
+Example pool config:
+
+```json
+{
+  "mode": "pool",
+  "device": "all",
+  "threads": 256,
+  "blocks": 4080,
+  "chunk_nonces": 4294967296,
+  "pool": "poolflix.eu:3333",
+  "user": "bc1...worker",
+  "pass": "x",
+  "pool_difficulty": 10000,
+  "debug_pool_header": true
+}
+```
+
+You can copy `examples/pool.example.json` as a starting point.
+
+Load it with:
+
+```bash
+./build/minershartx --config miner.json
+```
+
+or:
+
+```powershell
+.\build\minershartx.exe --config miner.json
+```
+
+Helper scripts also honor `MINER_CONFIG`:
+
+```bash
+MINER_CONFIG=miner.json MINER_USER="bc1...worker" ./scripts/run_pool_linux.sh
+```
+
+```powershell
+$env:MINER_CONFIG="miner.json"
+.\scripts\run_solo_5090.bat
+```
+
 ## Self-test
 
 The repo now also builds a small CPU-only correctness check, similar in spirit to the
@@ -185,6 +250,7 @@ chmod +x scripts/run_solo_linux.sh
 
 Optional Linux env vars for `run_solo_linux.sh`:
 
+- `MINER_CONFIG` (optional JSON config file)
 - `MINER_RPC_URL` (default: `http://127.0.0.1:8332`)
 - `MINER_ADDRESS` (default: wallet `getnewaddress`)
 - `MINER_RPC_USER`
@@ -215,6 +281,7 @@ By default, the Linux helpers mine on all detected CUDA devices. Override with
 
 Optional Linux env vars for `run_pool_linux.sh`:
 
+- `MINER_CONFIG` (optional JSON config file)
 - `MINER_POOL` (default: `poolflix.eu:3333`)
 - `MINER_USER` (required)
 - `MINER_PASS` (default: `x`)
@@ -228,8 +295,8 @@ Optional Linux env vars for `run_pool_linux.sh`:
 
 ## CLI options
 
-- `--mode <benchmark|pool>`
 - `--mode <benchmark|pool|solo>`
+- `--config <path>` (load JSON config first)
 - `--device <id>`
 - `--threads <value>` (32..1024, multiple of 32)
 - `--blocks <value>` (0 = auto)

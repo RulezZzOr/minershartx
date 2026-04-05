@@ -13,6 +13,7 @@ fi
 pool="${MINER_POOL:-poolflix.eu:3333}"
 user="${MINER_USER:-}"
 pass="${MINER_PASS:-x}"
+config_file="${MINER_CONFIG:-}"
 device="${MINER_DEVICE:-all}"
 threads="${MINER_THREADS:-256}"
 blocks="${MINER_BLOCKS:-4080}"
@@ -21,38 +22,49 @@ nonce_be="${MINER_NONCE_BE:-0}"
 pool_difficulty="${MINER_POOL_DIFFICULTY:-10000}"
 debug_pool_header="${MINER_DEBUG_POOL_HEADER:-0}"
 
-if [[ -z "$user" ]]; then
+if [[ -z "$user" && -z "$config_file" ]]; then
   echo "ERROR: MINER_USER is required (e.g. BTC_ADDRESS.worker)." >&2
   echo "Example:" >&2
   echo "  MINER_USER='bc1...myworker' scripts/run_pool_linux.sh" >&2
   exit 1
 fi
 
-cmd=(
-  "$exe_path"
-  --mode pool
-  --pool "$pool"
-  --user "$user"
-  --pass "$pass"
-  --pool-difficulty "$pool_difficulty"
-  --device "$device"
-  --threads "$threads"
-  --blocks "$blocks"
-  --chunk-nonces "$chunk_nonces"
-)
+if [[ -n "$config_file" ]]; then
+  cmd=(
+    "$exe_path"
+    --config "$config_file"
+  )
+else
+  cmd=(
+    "$exe_path"
+    --mode pool
+    --pool "$pool"
+    --user "$user"
+    --pass "$pass"
+    --pool-difficulty "$pool_difficulty"
+    --device "$device"
+    --threads "$threads"
+    --blocks "$blocks"
+    --chunk-nonces "$chunk_nonces"
+  )
 
-if [[ "$nonce_be" == "1" ]]; then
-  cmd+=(--nonce-submit-be)
-fi
-if [[ "$debug_pool_header" == "1" ]]; then
-  cmd+=(--debug-pool-header)
+  if [[ "$nonce_be" == "1" ]]; then
+    cmd+=(--nonce-submit-be)
+  fi
+  if [[ "$debug_pool_header" == "1" ]]; then
+    cmd+=(--debug-pool-header)
+  fi
 fi
 
 echo "Starting miner on Linux..."
-echo "Pool: $pool"
-echo "User: $user"
-echo "Device: $device Threads: $threads Blocks: $blocks Chunk: $chunk_nonces Diff: $pool_difficulty"
-echo "Debug pool header: $debug_pool_header"
+if [[ -n "$config_file" ]]; then
+  echo "Config: $config_file"
+else
+  echo "Pool: $pool"
+  echo "User: $user"
+  echo "Device: $device Threads: $threads Blocks: $blocks Chunk: $chunk_nonces Diff: $pool_difficulty"
+  echo "Debug pool header: $debug_pool_header"
+fi
 echo
 
 "${cmd[@]}"

@@ -1,0 +1,13 @@
+{
+  "mode": "pool",
+  "device": "all",
+  "threads": 256,
+  "blocks": 4080,
+  "chunk_nonces": 4294967296,
+  "pool": "poolflix.eu:3333",
+  "user": "bc1...worker",
+  "pass": "x",
+  "pool_difficulty": 10000,
+  "debug_pool_header": false,
+  "nonce_submit_be": false
+}
