@@ -92,6 +92,9 @@ chmod +x scripts/build_linux.sh
 ./scripts/build_linux.sh --build-type Release --cuda-arch native
 ```
 
+The Linux helper auto-detects `nvcc` from `PATH`, `CUDA_HOME`, `CUDA_PATH`, or
+`CUDAToolkit_ROOT` and passes the detected toolkit root to CMake.
+
 ## Self-test
 
 The repo now also builds a small CPU-only correctness check, similar in spirit to the
