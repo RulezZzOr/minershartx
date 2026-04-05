@@ -686,10 +686,26 @@ void print_pool_header_debug(const char* phase,
             << " job=" << job.job_id
             << " diff=" << format_compact_diff(diff)
             << " submit_mode=" << (nonce_submit_be ? "BE" : "LE")
+            << " clean=" << (job.clean_jobs ? "true" : "false")
+            << " branches=" << job.merkle_branch_le.size()
             << " ex2=" << ex2_hex
             << " ntime=" << ntime_hex
             << " nonce_submit=" << nonce_submit_hex
             << "\n";
+  std::cout << "[pool-debug] job_fields prevhash="
+            << bytes_to_hex(job.prevhash_le.data(), job.prevhash_le.size())
+            << " version=" << bytes_to_hex(job.version_le.data(), job.version_le.size())
+            << " nbits=" << bytes_to_hex(job.nbits_le.data(), job.nbits_le.size())
+            << " ntime=" << bytes_to_hex(job.ntime_le.data(), job.ntime_le.size())
+            << " coinb1_len=" << job.coinb1.size()
+            << " coinb2_len=" << job.coinb2.size()
+            << "\n";
+  if (!job.merkle_branch_le.empty()) {
+    std::cout << "[pool-debug] first_branch="
+              << bytes_to_hex(job.merkle_branch_le.front().data(),
+                              job.merkle_branch_le.front().size())
+              << "\n";
+  }
   std::cout << "[pool-debug] fields version="
             << bytes_to_hex(header.data(), 4)
             << " prevhash=" << bytes_to_hex(header.data() + 4, 32)
