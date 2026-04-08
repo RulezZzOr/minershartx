@@ -160,7 +160,7 @@ void test_stratum_header_layout() {
 
 }  // namespace
 
-int main() {
+int run_sha256_tests() {
   test_hex_helpers();
   test_sha256_vectors();
   test_sha256d_vectors();
@@ -171,7 +171,5 @@ int main() {
     std::cerr << g_failures << " self-test failure(s)\n";
     return 1;
   }
-
-  std::cout << "minershartx self-test passed\n";
   return 0;
 }

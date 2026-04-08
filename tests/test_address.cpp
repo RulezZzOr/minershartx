@@ -68,7 +68,7 @@ void test_rejections() {
 
 }  // namespace
 
-int main() {
+int run_address_tests() {
   test_known_addresses();
   test_rejections();
 
@@ -76,7 +76,5 @@ int main() {
     std::cerr << g_failures << " address test failure(s)\n";
     return 1;
   }
-
-  std::cout << "address decoder self-test passed\n";
   return 0;
 }
