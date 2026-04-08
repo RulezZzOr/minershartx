@@ -1,4 +1,5 @@
 #include "cuda_scan.h"
+#include "nonce_partition.h"
 #include "sha256_cpu.h"
 
 #include <cuda_runtime.h>
@@ -620,6 +621,9 @@ int run_benchmark(const BenchmarkConfig& config) {
         return;
       }
 
+      const NoncePartition nonce_partition = split_nonce_space(
+          static_cast<std::size_t>(dev), config.devices.size());
+
       {
         const unsigned long long zero_counter = 0ULL;
         const std::uint32_t zero_sink = 0U;
@@ -638,14 +642,31 @@ int run_benchmark(const BenchmarkConfig& config) {
       auto t0 = std::chrono::steady_clock::now();
       double elapsed_s = 0.0;
       std::uint64_t launches = 0;
+      std::uint64_t partition_scanned = 0;
 
       do {
+        if (nonce_partition.size == 0) {
+          break;
+        }
+
+        const std::uint64_t start_nonce64 = nonce_partition.start + partition_scanned;
+        const std::uint64_t remaining = nonce_partition.size - partition_scanned;
+        const std::uint64_t to_scan = std::min(chunk_nonces, remaining);
+        if (to_scan == 0) {
+          partition_scanned = 0;
+          continue;
+        }
+
         sha256d_benchmark_kernel<<<blocks, config.threads>>>(
-            d_midstate, tail0, tail1, tail2, start_nonce, chunk_nonces, d_counter, d_sink);
+            d_midstate, tail0, tail1, tail2, static_cast<std::uint32_t>(start_nonce64),
+            to_scan, d_counter, d_sink);
         cudaGetLastError();
         cudaDeviceSynchronize();
 
-        start_nonce += static_cast<std::uint32_t>(chunk_nonces);
+        partition_scanned += to_scan;
+        if (partition_scanned >= nonce_partition.size) {
+          partition_scanned = 0;
+        }
         ++launches;
 
         const auto now = std::chrono::steady_clock::now();

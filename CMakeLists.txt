@@ -60,6 +60,7 @@ if(BUILD_TESTING)
   add_executable(minershartx_selftest
     tests/selftest_main.cpp
     tests/test_address.cpp
+    tests/test_nonce_partition.cpp
     tests/test_sha256.cpp
     src/address_decoder.cpp
     src/sha256_cpu.cpp

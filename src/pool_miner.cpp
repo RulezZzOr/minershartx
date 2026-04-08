@@ -1,5 +1,6 @@
 #include "pool_miner.h"
 
+#include "nonce_partition.h"
 #include "cuda_scan.h"
 #include "sha256_cpu.h"
 
@@ -804,8 +805,9 @@ int run_pool_miner(const PoolConfig& config) {
   for (std::size_t i = 0; i < config.devices.size(); ++i) {
     const int device = config.devices[i];
     const std::uint32_t ex2_prefix = static_cast<std::uint32_t>(i);
+    const NoncePartition nonce_partition = split_nonce_space(i, config.devices.size());
 
-    gpu_threads.emplace_back([&, device, ex2_prefix]() {
+    gpu_threads.emplace_back([&, device, ex2_prefix, nonce_partition]() {
       ScanEngineConfig engine_cfg{};
       engine_cfg.device = device;
       engine_cfg.blocks = config.blocks;
@@ -863,8 +865,7 @@ int run_pool_miner(const PoolConfig& config) {
       double current_diff = 0.0;
       std::uint64_t current_generation = 0;
 
-      std::uint32_t scanned_in_space = 0;
-      std::uint32_t start_nonce = 0;
+      std::uint64_t partition_scanned = 0;
       std::uint32_t base_ex2 = 0;
 
       while (!stop_flag.load(std::memory_order_relaxed)) {
@@ -880,13 +881,12 @@ int run_pool_miner(const PoolConfig& config) {
 
         if (local_job.job.job_id != current_job_id) {
           current_job_id = local_job.job.job_id;
-          scanned_in_space = 0;
-          start_nonce = 0;
+          partition_scanned = 0;
           base_ex2 = 0;
         }
         current_generation = local_job.generation;
 
-        if (scanned_in_space == 0) {
+        if (partition_scanned == 0) {
           // to avoid collisions, we shift the prefix into the upper bits of ex2
           // assume extranonce2_size is at least 4. If it's smaller, we just rely on base_ex2.
           std::uint64_t full_ex2 = base_ex2;
@@ -916,12 +916,22 @@ int run_pool_miner(const PoolConfig& config) {
         current_target = local_job.share_target;
         current_diff = local_job.diff;
 
-        const std::uint64_t remaining = 4294967296ULL - scanned_in_space;
+        if (nonce_partition.size == 0) {
+          continue;
+        }
+
+        const std::uint64_t start_nonce64 = nonce_partition.start + partition_scanned;
+        const std::uint64_t remaining = nonce_partition.size - partition_scanned;
         const std::uint64_t to_scan = std::min(tuned_chunk, remaining);
+        if (to_scan == 0) {
+          partition_scanned = 0;
+          ++base_ex2;
+          continue;
+        }
 
         ScanWork scan{};
         scan.nonce_count = to_scan;
-        scan.start_nonce = start_nonce;
+        scan.start_nonce = static_cast<std::uint32_t>(start_nonce64);
         scan.tail0 = current_tail0;
         scan.tail1 = current_tail1;
         scan.tail2 = current_tail2;
@@ -939,8 +949,12 @@ int run_pool_miner(const PoolConfig& config) {
         }
 
         global_hashes.fetch_add(to_scan, std::memory_order_relaxed);
-        scanned_in_space += static_cast<std::uint32_t>(to_scan);
-        start_nonce += static_cast<std::uint32_t>(to_scan);
+        partition_scanned += to_scan;
+
+        if (partition_scanned >= nonce_partition.size) {
+          partition_scanned = 0;
+          ++base_ex2;
+        }
 
         if (scan_result.found) {
           std::array<std::uint8_t, 80> verify_header = current_header;
@@ -1000,9 +1014,6 @@ int run_pool_miner(const PoolConfig& config) {
           }
         }
 
-        if (scanned_in_space == 0) {
-          ++base_ex2;
-        }
       }
     });
   }

@@ -2,6 +2,7 @@
 
 #include "address_decoder.h"
 #include "cuda_scan.h"
+#include "nonce_partition.h"
 #include "sha256_cpu.h"
 
 #include <nlohmann/json.hpp>
@@ -315,8 +316,6 @@ struct SoloWork {
   Uint256 target{};
   std::uint32_t height = 0;
   std::uint64_t generation = 0;
-  std::uint32_t start_nonce = 0;
-  std::uint32_t scanned_in_space = 0;
   std::uint64_t base_ex2 = 0;
   std::uint32_t last_ntime = 0;
 };
@@ -1349,8 +1348,9 @@ int run_solo_miner(const SoloConfig& config) {
   for (std::size_t i = 0; i < config.devices.size(); ++i) {
     const int device = config.devices[i];
     const std::uint32_t ex2_prefix = static_cast<std::uint32_t>(i);
+    const NoncePartition nonce_partition = split_nonce_space(i, config.devices.size());
 
-    gpu_threads.emplace_back([&, device, ex2_prefix]() {
+    gpu_threads.emplace_back([&, device, ex2_prefix, nonce_partition]() {
       ScanEngineConfig engine_cfg{};
       engine_cfg.device = device;
       engine_cfg.blocks = config.blocks;
@@ -1398,8 +1398,7 @@ int run_solo_miner(const SoloConfig& config) {
       std::string current_job_id;
       std::uint64_t current_generation = 0;
       std::uint32_t base_ex2 = 0;
-      std::uint32_t start_nonce = 0;
-      std::uint32_t scanned_in_space = 0;
+      std::uint64_t partition_scanned = 0;
 
       while (!stop_flag.load(std::memory_order_relaxed)) {
         SoloTemplate local_template;
@@ -1417,12 +1416,11 @@ int run_solo_miner(const SoloConfig& config) {
 
         if (local_template.identity != current_job_id) {
           current_job_id = local_template.identity;
-          start_nonce = 0;
-          scanned_in_space = 0;
+          partition_scanned = 0;
           base_ex2 = 0;
         }
 
-        if (scanned_in_space == 0) {
+        if (partition_scanned == 0) {
           const std::uint64_t full_ex2 =
               (static_cast<std::uint64_t>(ex2_prefix) << 32U) |
               static_cast<std::uint64_t>(base_ex2);
@@ -1436,12 +1434,22 @@ int run_solo_miner(const SoloConfig& config) {
         }
 
         current_work.generation = current_generation;
-        const std::uint64_t remaining = 4294967296ULL - scanned_in_space;
+        if (nonce_partition.size == 0) {
+          continue;
+        }
+
+        const std::uint64_t start_nonce64 = nonce_partition.start + partition_scanned;
+        const std::uint64_t remaining = nonce_partition.size - partition_scanned;
         const std::uint64_t to_scan = std::min(tuned_chunk, remaining);
+        if (to_scan == 0) {
+          partition_scanned = 0;
+          ++base_ex2;
+          continue;
+        }
 
         ScanWork scan{};
         scan.nonce_count = to_scan;
-        scan.start_nonce = start_nonce;
+        scan.start_nonce = static_cast<std::uint32_t>(start_nonce64);
         scan.tail0 = current_work.tail0;
         scan.tail1 = current_work.tail1;
         scan.tail2 = current_work.tail2;
@@ -1459,8 +1467,12 @@ int run_solo_miner(const SoloConfig& config) {
         }
 
         global_hashes.fetch_add(to_scan, std::memory_order_relaxed);
-        scanned_in_space += static_cast<std::uint32_t>(to_scan);
-        start_nonce += static_cast<std::uint32_t>(to_scan);
+        partition_scanned += to_scan;
+
+        if (partition_scanned >= nonce_partition.size) {
+          partition_scanned = 0;
+          ++base_ex2;
+        }
 
         if (scan_result.found) {
           std::array<std::uint8_t, 80> verify_header = current_work.header;
@@ -1547,9 +1559,6 @@ int run_solo_miner(const SoloConfig& config) {
           }
         }
 
-        if (scanned_in_space == 0) {
-          ++base_ex2;
-        }
       }
     });
   }
